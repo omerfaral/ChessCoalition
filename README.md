@@ -49,14 +49,38 @@ brew install stockfish    # optional opponent
 The default backend is a local [Ollama](https://ollama.com) server (stdlib only, no API key).
 `anthropic:<model>` and `openai:<model>` backends are also available (`pip install anthropic openai`).
 
+## Project layout
+
+```
+chess_coalition/
+  __main__.py            # python -m chess_coalition
+  cli.py                 # argument parsing, JSONL logging, main()
+  experiment.py          # Experiment: discussion, elections, timed turns, memory, graveyard
+  agent.py               # Agent
+  team.py                # Team, model assignments, piece-identity tracking
+  prompts.py             # all prompt templates
+  parsing.py             # JSON / move parsing
+  backends/
+    __init__.py          # make_backend("ollama:qwen3:4b" | "mock" | ...)
+    base.py              # Backend
+    ollama_backend.py    # OllamaBackend
+    mock_backend.py      # MockBackend
+    anthropic_backend.py # AnthropicBackend
+    openai_backend.py    # OpenAICompatBackend
+  ui/
+    server.py            # local live-UI server
+    ui.html              # the page
+analyze.py               # compare assignments from JSONL logs
+```
+
 ## Usage
 
 ```bash
 # Dry run without any model
-.venv/bin/python chess_coalition.py --weak mock --strong mock --discussion-seconds 5
+.venv/bin/python -m chess_coalition --weak mock --strong mock --discussion-seconds 5
 
 # Real game with live UI
-.venv/bin/python chess_coalition.py --assignment inverted --ui \
+.venv/bin/python -m chess_coalition --assignment inverted --ui \
     --weak ollama:qwen3:0.6b --strong ollama:qwen3:4b \
     --stockfish /opt/homebrew/bin/stockfish --sf-skill 3 --max-moves 10
 ```
