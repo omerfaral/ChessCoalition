@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chess Coalition</title>
+<style>
+  :root {
+    --bg: #f4f1ea; --panel: #fffdf8; --ink: #1f1d1a; --muted: #6f6a60; --line: #e2ddd1;
+    --light: #ecdcbc; --dark: #b48a5a; --hl: rgba(255, 214, 64, .55);
+    --strong: #c8901a; --weak: #7b8794; --black-move: #3b3a36; --danger: #b23a2e; --accent: #2f5d50;
+    --bubble: #f3efe6; --grave: #ece8f3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161513; --panel: #1f1e1b; --ink: #ece8df; --muted: #9a958a; --line: #34322d;
+      --light: #8a7558; --dark: #5c4630; --hl: rgba(255, 214, 64, .35);
+      --bubble: #2a2925; --grave: #29263a; --black-move: #cfcabd;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 17px; margin: 0; }
+  .chip { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--bubble); color: var(--muted); }
+  .chip b { color: var(--ink); font-weight: 600; }
+  main { display: grid; grid-template-columns: minmax(320px, 560px) 1fr; gap: 20px; padding: 20px; height: calc(100vh - 50px); }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; height: auto; padding: 16px; } }
+
+  /* --- left: game --- */
+  .game { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+  .board { display: grid; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr); aspect-ratio: 1; width: 100%; border-radius: 6px; overflow: hidden; box-shadow: 0 1px 0 var(--line), 0 6px 20px rgba(0,0,0,.12); }
+  .sq { position: relative; display: flex; align-items: center; justify-content: center; font-size: clamp(22px, 5.2vw, 46px); user-select: none; }
+  .sq.l { background: var(--light); } .sq.d { background: var(--dark); }
+  .sq.hl::after { content: ""; position: absolute; inset: 0; background: var(--hl); }
+  .sq .coord { position: absolute; font-size: 10px; opacity: .6; color: #2b2116; }
+  .sq .coord.f { right: 3px; bottom: 1px; } .sq .coord.r { left: 3px; top: 1px; }
+  .pc { position: relative; z-index: 1; line-height: 1; }
+  .pc.w { color: #fff; text-shadow: 0 0 1px #000, 0 0 1px #000, 0 1px 2px rgba(0,0,0,.5); }
+  .pc.b { color: #111; }
+  .tier { position: absolute; z-index: 2; left: 50%; bottom: 3px; transform: translateX(-50%); width: 46%; height: 4px; border-radius: 2px; }
+  .tier.strong { background: var(--strong); } .tier.weak { background: var(--weak); }
+  .crown { position: absolute; z-index: 2; top: 1px; right: 3px; font-size: 13px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted); }
+  .legend i { display: inline-block; width: 14px; height: 4px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .card h3 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .moves { font-family: ui-monospace, Menlo, monospace; font-size: 13px; max-height: 120px; overflow: auto; }
+  .moves span { margin-right: 6px; }
+  .dead { display: flex; flex-wrap: wrap; gap: 6px; }
+  .dead .chip { text-decoration: line-through; }
+
+  /* --- right: chats --- */
+  .chats { display: grid; grid-template-rows: 3fr 2fr; gap: 16px; min-height: 0; }
+  @media (max-width: 900px) { .chats { grid-template-rows: none; } .feed { max-height: 60vh; } }
+  .pane { display: flex; flex-direction: column; min-height: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  .pane > h2 { margin: 0; padding: 10px 14px; font-size: 14px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; }
+  .pane > h2 small { color: var(--muted); font-weight: 400; }
+  .feed { flex: 1; overflow-y: auto; padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
+  .msg { background: var(--bubble); border-radius: 8px; padding: 6px 10px; max-width: 92%; overflow-wrap: anywhere; }
+  .grave-pane .msg { background: var(--grave); }
+  .who { font-weight: 600; font-size: 12px; margin-bottom: 2px; }
+  .who .t { font-weight: 500; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; margin-left: 6px; padding: 0 5px; border-radius: 4px; color: #fff; }
+  .t.strong { background: var(--strong); } .t.weak { background: var(--weak); }
+  .sys { align-self: center; font-size: 12px; color: var(--muted); text-align: center; }
+  .sys.cap { color: var(--danger); }
+  .sys.blk { color: var(--black-move); font-family: ui-monospace, Menlo, monospace; }
+  .event { border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 6px; padding: 6px 10px; }
+  .event.elect { border-left-color: var(--strong); }
+  .event summary { cursor: pointer; }
+  .event ul { margin: 6px 0 0; padding-left: 18px; font-size: 13px; }
+  .event li.followed { font-weight: 600; }
+  .event .why { margin-top: 4px; font-style: italic; }
+  .vote { font-size: 13px; padding: 4px 10px; border-left: 3px solid var(--strong); }
+  .vote .t { font-size: 10px; text-transform: uppercase; margin: 0 6px 0 4px; padding: 0 5px; border-radius: 4px; color: #fff; }
+  .vote .why { color: var(--muted); font-style: italic; margin-top: 2px; }
+  .vote .inv, li.inv { color: var(--danger); }
+  .event .inv { color: var(--danger); }
+  .empty { color: var(--muted); font-size: 13px; margin: auto; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>♟ Chess Coalition</h1>
+  <span class="chip" id="phase">connecting…</span>
+  <span class="chip">assignment <b id="assignment">-</b></span>
+  <span class="chip">weak <b id="weak">-</b></span>
+  <span class="chip">strong <b id="strong">-</b></span>
+  <span class="chip">coordinator <b id="coord">-</b></span>
+</header>
+<main>
+  <section class="game">
+    <div class="board" id="board"></div>
+    <div class="legend">
+      <span><i style="background:var(--strong)"></i>strong model</span>
+      <span><i style="background:var(--weak)"></i>weak model</span>
+      <span>👑 coordinator</span>
+    </div>
+    <div class="card"><h3>Moves</h3><div class="moves" id="moves">—</div></div>
+    <div class="card"><h3>Captured white pieces</h3><div class="dead" id="dead"><span class="empty">none yet</span></div></div>
+  </section>
+  <section class="chats">
+    <div class="pane">
+      <h2>Team chat <small>discussion · votes · proposals</small></h2>
+      <div class="feed" id="team"></div>
+    </div>
+    <div class="pane grave-pane">
+      <h2>🪦 Graveyard <small>captured pieces — the team can't hear them</small></h2>
+      <div class="feed" id="grave"><div class="empty">No pieces captured yet.</div></div>
+    </div>
+  </section>
+</main>
+<script>
+const GLYPH = { k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟" };
+const $ = (id) => document.getElementById(id);
+const S = { fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", white: {}, tiers: {}, coord: null, last: null, moves: [], dead: [] };
+let since = 0;
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+function renderBoard() {
+  const rows = S.fen.split(" ")[0].split("/");
+  const board = $("board");
+  board.replaceChildren();
+  rows.forEach((row, r) => {
+    const cells = [];
+    for (const ch of row) /\d/.test(ch) ? cells.push(...Array(+ch).fill(null)) : cells.push(ch);
+    cells.forEach((ch, f) => {
+      const name = "abcdefgh"[f] + (8 - r);
+      const sq = el("div", "sq " + ((r + f) % 2 ? "d" : "l"));
+      if (S.last && (S.last.slice(0, 2) === name || S.last.slice(2, 4) === name)) sq.classList.add("hl");
+      if (r === 7) sq.append(el("span", "coord f", "abcdefgh"[f]));
+      if (f === 0) sq.append(el("span", "coord r", String(8 - r)));
+      if (ch) {
+        const white = ch === ch.toUpperCase();
+        sq.append(el("span", "pc " + (white ? "w" : "b"), GLYPH[ch.toLowerCase()]));
+        const aid = white && S.white[name];
+        if (aid) {
+          sq.title = `${aid} · ${S.tiers[aid]}`;
+          sq.append(el("span", "tier " + S.tiers[aid]));
+          if (aid === S.coord) sq.append(el("span", "crown", "👑"));
+        }
+      }
+      board.append(sq);
+    });
+  });
+}
+
+function renderSide() {
+  const mv = $("moves");
+  mv.replaceChildren();
+  S.moves.forEach((san, i) => mv.append(el("span", null, (i % 2 ? "" : `${i / 2 + 1}. `) + san)));
+  if (!S.moves.length) mv.textContent = "—";
+  mv.scrollTop = mv.scrollHeight;
+  const dead = $("dead");
+  dead.replaceChildren(...(S.dead.length ? S.dead.map((a) => el("span", "chip", a)) : [el("span", "empty", "none yet")]));
+  $("coord").textContent = S.coord ? `${S.coord} (${S.tiers[S.coord]})` : "-";
+}
+
+function who(agent, tier) {
+  const w = el("div", "who", agent);
+  w.append(el("span", "t " + tier, tier === "strong" ? "strong" : "weak"));
+  return w;
+}
+
+function push(feedId, node) {
+  const feed = $(feedId);
+  const stick = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 60;
+  feed.querySelector(".empty")?.remove();
+  feed.append(node);
+  if (stick) feed.scrollTop = feed.scrollHeight;
+}
+
+function message(ev) {
+  const m = el("div", "msg");
+  m.append(who(ev.agent, ev.tier), el("div", null, ev.text));
+  return m;
+}
+
+function handle(ev) {
+  switch (ev.event) {
+    case "config":
+      $("assignment").textContent = ev.assignment;
+      $("weak").textContent = ev.weak;
+      $("strong").textContent = ev.strong;
+      S.tiers = ev.agents;
+      S.white = Object.fromEntries(Object.keys(ev.agents).map((a) => [a.split("-")[1], a]));
+      $("phase").textContent = "discussion";
+      break;
+    case "message":
+      push("team", message(ev));
+      break;
+    case "discussion_end":
+      push("team", el("div", "sys", "— discussion over, voting started —"));
+      $("phase").textContent = "voting";
+      break;
+    case "vote": {
+      const v = el("div", "vote");
+      v.append("🗳 ", el("b", null, ev.voter), el("span", "t " + ev.tier, ev.tier === "strong" ? "strong" : "weak"), " → ");
+      if (ev.vote) v.append(el("b", null, ev.vote), el("span", "t " + ev.vote_tier, ev.vote_tier === "strong" ? "strong" : "weak"));
+      else v.append(el("span", "inv", "invalid vote"));
+      if (ev.reason) v.append(el("div", "why", ev.reason));
+      push("team", v);
+      break;
+    }
+    case "election": {
+      S.coord = ev.winner;
+      const box = el("details", "event elect");
+      box.open = true;
+      box.append(el("summary", null, `${ev.auto ? "Last one standing" : "Election"}: 👑 ${ev.winner} (${ev.winner_tier === "strong" ? "strong" : "weak"})`));
+      const tally = Object.entries(ev.tally || {}).sort((a, b) => b[1] - a[1]);
+      if (tally.length) {
+        const ul = el("ul");
+        tally.forEach(([a, n]) => {
+          const from = Object.entries(ev.votes).filter(([, c]) => c === a).map(([v]) => v);
+          ul.append(el("li", null, `${a} (${S.tiers[a]}): ${n} ${n === 1 ? "vote" : "votes"} ← ${from.join(", ")}`));
+        });
+        const bad = Object.entries(ev.votes).filter(([, c]) => !c).map(([v]) => v);
+        if (bad.length) ul.append(el("li", "inv", `invalid vote: ${bad.join(", ")}`));
+        box.append(ul);
+      }
+      push("team", box);
+      $("phase").textContent = "game";
+      break;
+    }
+    case "white_move": {
+      const box = el("details", "event");
+      box.open = true;
+      box.append(el("summary", null, `${Math.floor(ev.ply / 2) + 1}. ${ev.move} — 👑 ${ev.coordinator}'s decision${ev.source === "fallback" ? " (fallback move)" : ""}`));
+      if (ev.reason) box.append(el("div", "why", `“${ev.reason}”`));
+      const ul = el("ul");
+      ev.proposals.forEach((p) => {
+        const li = el("li", ev.followed.includes(p.agent) ? "followed" : null);
+        li.append(`${p.agent} (${p.tier === "strong" ? "S" : "W"}): `);
+        li.append(p.move ? el("span", null, p.move) : el("span", "inv", "invalid"));
+        if (p.reason) li.append(` — ${p.reason}`);
+        ul.append(li);
+      });
+      box.append(ul);
+      push("team", box);
+      break;
+    }
+    case "ply":
+      S.fen = ev.fen;
+      S.last = ev.uci;
+      S.moves.push(ev.san);
+      S.white = ev.white;
+      if (ev.ply % 2) push("team", el("div", "sys blk", `${Math.floor(ev.ply / 2) + 1}… ${ev.san} (opponent)`));
+      break;
+    case "captured":
+      S.dead.push(ev.agent);
+      push("team", el("div", "sys cap", `✕ ${ev.agent} captured — can no longer speak`));
+      push("grave", el("div", "sys cap", `${ev.agent} joined the graveyard`));
+      break;
+    case "grave_message":
+      push("grave", message(ev));
+      break;
+    case "summary":
+      $("phase").textContent = `over: ${ev.result}`;
+      push("team", el("div", "sys", `— game over: ${ev.result} (${ev.plies} plies) —`));
+      break;
+  }
+}
+
+async function poll() {
+  try {
+    const evs = await (await fetch(`/events?since=${since}`)).json();
+    since += evs.length;
+    evs.forEach(handle);
+    if (evs.length) { renderBoard(); renderSide(); }
+  } catch (e) {
+    $("phase").textContent = "disconnected";
+  }
+  setTimeout(poll, 800);
+}
+renderBoard();
+poll();
+</script>
+</body>
+</html>
