@@ -302,7 +302,8 @@ Reply with JSON: {{"plan": "<brief private notes on what to say>", "message": "<
 
 VOTE_TMPL = """The discussion is over. Vote for the COORDINATOR.
 Choose the agent who demonstrated the strongest reasoning. You cannot vote for yourself.
-Candidates: {candidates}
+Candidates (the only valid votes): {candidates}
+Captured pieces are out of the game and CANNOT be elected: {dead}
 
 Transcript:
 {transcript}
@@ -424,6 +425,7 @@ class Experiment:
     def elect(self, transcript: list[str], ply: int) -> str:
         voters = self.team.alive()
         ids = [a.agent_id for a in voters]
+        dead = [a.agent_id for a in self.team.agents.values() if not a.alive]
         if len(voters) == 1:  # tek kalan ajan (genelde Şah) oylamasız koordinatör olur
             w = voters[0]
             rec = {"ply": ply, "winner": w.agent_id, "winner_tier": w.tier, "votes": {}, "tally": {}, "auto": True}
@@ -434,7 +436,7 @@ class Experiment:
 
         def vote(agent: Agent):
             cands = [i for i in ids if i != agent.agent_id]
-            prompt = VOTE_TMPL.format(candidates=", ".join(cands), transcript="\n".join(transcript[-60:]))
+            prompt = VOTE_TMPL.format(candidates=", ".join(cands), dead=", ".join(dead) or "(none)", transcript="\n".join(transcript[-60:]))
             out = self.ask(agent, prompt, 150, {"task": "vote", "candidates": cands})
             data = parse_json(out)
             v = str(data.get("vote", "")).strip()
