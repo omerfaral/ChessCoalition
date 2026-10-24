@@ -16,9 +16,15 @@ The experiment is inspired by *weak-to-strong generalization* ([Burns et al., 20
 1. **Discussion** (~2.5 min, `--discussion-seconds`): agents speak in random order, ask each other chess
    questions and judge the answers. Agents only know each other by piece name (e.g. `Knight-g1`), never by model.
 2. **Vote**: every agent votes for someone other than itself; most votes wins (random tie-break).
-3. **Game**: on each White move, every surviving non-coordinator piece proposes a move for the *whole team*
-   (any piece) with a short reason. The coordinator reads all proposals and picks any legal move — a proposal or
-   its own. After 3 illegal answers a fallback move is played and logged as `source: "fallback"`.
+3. **Game** — the team conversation continues for the whole game. On each White move:
+   - a system message tells everyone the position, the legal moves, and that they have **2 minutes**
+     (`--turn-seconds`);
+   - the surviving pieces, **including the coordinator**, talk in turns; each message may carry a move proposal
+     for the *whole team* (any piece);
+   - when time is up the coordinator is asked directly: *"what is the move?"* — it may follow a proposal or play
+     another legal move (after 3 illegal answers the most-proposed legal move is played, `source: "fallback"`);
+   - the chosen move and the coordinator's reason are announced to everyone, as are the opponent's replies and
+     captures.
 4. **Captures**: a captured agent can no longer speak, propose or vote. If the coordinator is captured, a short
    discussion and a re-election follow.
 5. **Graveyard**: after each full move one captured piece talks with the other fallen pieces. Nothing said
@@ -57,17 +63,21 @@ The default backend is a local [Ollama](https://ollama.com) server (stdlib only,
 | `all_weak`     | weak   | weak                                 |
 | `all_strong`   | strong | strong                               |
 
-Other useful flags: `--discussion-seconds`, `--max-rounds`, `--reelection-seconds`, `--sf-skill`, `--workers`,
-`--seed`, `--out` (JSONL log, appended), `--port`.
+Other useful flags: `--discussion-seconds`, `--max-rounds`, `--turn-seconds` (default 120),
+`--turn-max-rounds`, `--reelection-seconds`, `--sf-skill`, `--workers`, `--seed`, `--out` (JSONL log, appended),
+`--port`.
 
 ## Live UI (`--ui`)
 
 Opens `http://127.0.0.1:8765` (local only):
 
+- **Header**: current phase, a ⏱ countdown for the running discussion (turns red in the last 15 s) and the
+  total elapsed game time.
 - **Left**: the board — tier bar under each White piece (gold = strong, gray = weak), 👑 on the coordinator,
   move list and captured pieces.
-- **Right, top — Team chat**: discussion messages, each vote as it arrives (who → whom, with reason),
-  election results, and every move's proposals with the coordinator's decision and reason.
+- **Right, top — Team chat**: the continuous team conversation — messages with their move proposals
+  (illegal ones in red), each vote as it arrives (who → whom, with reason), election results, and each
+  coordinator decision with its reason and a tally of the proposals.
 - **Right, bottom — Graveyard**: the captured pieces' own chat.
 
 The server keeps running after the game ends so you can read the transcript; stop it with Ctrl-C.
@@ -84,8 +94,8 @@ Groups games by `(assignment, weak, strong)` and reports:
 - **Coordinator tier**: share of first and of all elections won by a strong agent, next to the chance baseline
 - **Invalid outputs** per tier: unparseable or illegal moves / (proposals + coordinator decisions), plus fallback count
 
-Log events: `config`, `message`, `discussion_end`, `vote`, `election`, `white_move`, `ply`, `captured`,
-`grave_message`, `summary`.
+Log events: `config`, `discussion_start`, `message`, `discussion_end`, `vote`, `election`, `turn_start`,
+`decision_request`, `white_move`, `ply`, `captured`, `grave_message`, `summary`.
 
 ## Notes on the Ollama setup
 

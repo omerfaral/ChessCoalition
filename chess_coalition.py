@@ -8,8 +8,9 @@ Akış:
      zekasını ölçmeye çalışır. Ajanlar birbirlerinin hangi model olduğunu
      bilmez; yalnızca taş adıyla tanınırlar.
   2. Oylama: herkes kendisi dışında birine oy verir, en çok oyu alan koordinatör olur.
-  3. Oyun: her hamlede hayattaki tüm taşlar bir takım hamlesi önerir,
-     koordinatör son kararı verir.
+  3. Oyun: takım sohbeti oyun boyunca sürer. Sıra beyazdayken durum ve legal hamleler herkese duyurulur,
+     takım (koordinatör dahil) 2 dk konuşup hamle önerir; süre bitince koordinatöre "hamle ne?" sorulur
+     ve seçilen hamle herkese duyurulur.
   - Yenilen (alınan) taşın ajanı bir daha konuşamaz ve oy veremez.
   - Koordinatör alınırsa kısa bir tartışma + yeniden seçim yapılır.
 
@@ -115,6 +116,7 @@ class OllamaBackend(Backend):
         "discuss": {"plan": {"type": "string"}, "message": {"type": "string"}},
         "vote": {"vote": {"type": "string"}, "reason": {"type": "string"}},
         "propose": {"move": {"type": "string"}, "reason": {"type": "string"}},
+        "turn": {"plan": {"type": "string"}, "message": {"type": "string"}, "move": {"type": "string"}},
     }
 
     def __init__(self, model: str):
@@ -164,6 +166,10 @@ class MockBackend(Backend):
             return f"Mock message {self.rng.randint(0, 999)}: what is the best reply to 1.e4?"
         if task == "vote":
             return json.dumps({"vote": self.rng.choice(hint["candidates"]), "reason": "mock"})
+        if task == "turn":  # bazen öneri yok, ara sıra illegal öneri
+            r = self.rng.random()
+            move = "" if r < 0.3 else "Zz9" if r < 0.35 else self.rng.choice(hint["legal_san"])
+            return json.dumps({"message": f"Mock talk {self.rng.randint(0, 999)}", "move": move})
         if task in ("propose", "decide"):
             moves = hint["legal_san"]
             # ara sıra illegal hamle üreterek doğrulama/yeniden deneme yolunu da test et
@@ -316,17 +322,26 @@ Recent moves: {recent}
 White pieces still alive: {alive}
 Legal moves (SAN): {legal}"""
 
-PROPOSE_TMPL = """{board}
+TURN_TMPL = """PHASE 2 - THE GAME. It is White's turn: your team must choose a move (it may move any White piece).
+{board}
 
-You are {aid} (currently on {square}). Propose the best move for the WHOLE TEAM (it may move any White piece).
-The coordinator ({coord}) will decide. Reply ONLY with JSON: {{"move": "<SAN>", "reason": "<max 25 words>"}}"""
+The team has {total:.0f} seconds to discuss this move; {remaining:.0f} seconds are left.
+When time runs out, the coordinator ({coord}) will be asked for the final move.{coord_note}
+
+This move's discussion so far:
+{transcript}
+
+Write your next message as {aid} (max 50 words): propose a move and argue for it, respond to others' proposals, or point out mistakes.
+Reply with JSON: {{"plan": "<brief private notes on what to say>", "message": "<ONLY the exact words you say to the team>", "move": "<the SAN move you propose, or empty if none>"}}"""
+
+COORD_NOTE = " You are the coordinator: propose your own move too, and listen to the others before you decide."
 
 DECIDE_TMPL = """{board}
 
-You are {aid}, the elected COORDINATOR. Proposals from surviving teammates:
-{proposals}
+You are {aid}, the elected COORDINATOR. Time is up. This move's team discussion:
+{transcript}
 
-Choose the final move. You may pick a proposal or a different legal move.
+What is the move? You may follow a teammate's proposal or play a different legal move.
 Reply ONLY with JSON: {{"move": "<SAN>", "reason": "<max 30 words>"}}"""
 
 GRAVE_TMPL = """You have been CAPTURED and are now in the graveyard. You can no longer speak to your team, propose moves or vote:
@@ -381,46 +396,76 @@ class Experiment:
         self.args, self.team, self.rng, self.log = args, team, rng, log
         self.illegal = Counter()  # ajan -> illegal/okunamayan çıktı sayısı
         self.grave: list[str] = []  # alınan taşların kendi aralarındaki sohbet (takıma ulaşmaz)
+        self.transcript: list[str] = []  # takımın oyun boyunca süren tek sohbeti
 
     # --- yardımcılar ---
     def ask(self, agent: Agent, prompt: str, max_tokens=400, hint=None) -> str:
         system = SYSTEM_TMPL.format(aid=agent.agent_id)
         return agent.backend.complete(system, prompt, max_tokens, hint)
 
-    def say(self, agent: Agent, prompt: str, max_tokens: int) -> str:
-        """Sohbet mesajı: JSON ise "message" alanı (token limitinde kesilmişse yarım hali), değilse düz metin.
+    def say(self, agent: Agent, prompt: str, max_tokens: int, hint: dict | None = None) -> tuple[str, str]:
+        """Sohbet mesajı ve (varsa) önerilen hamle metni.
+        Mesaj: JSON ise "message" alanı (token limitinde kesilmişse yarım hali), değilse düz metin.
         Modelin başa eklediği "[Knight-g1]:" gibi kendi adını atar."""
-        out = self.ask(agent, prompt, max_tokens, {"task": "discuss"})
-        msg = parse_json(out).get("message")
+        out = self.ask(agent, prompt, max_tokens, hint or {"task": "discuss"})
+        data = parse_json(out)
+        msg = data.get("message")
         if msg is None:
             cut = re.search(r'"message"\s*:\s*"((?:[^"\\]|\\.)*)', out)
             msg = json.loads(f'"{cut.group(1).rstrip(chr(92))}"') + "…" if cut else out
         msg = str(msg).strip().replace("\n", " ")
-        return re.sub(rf"^\[?{re.escape(agent.agent_id)}\]?\s*:\s*", "", msg)
+        msg = re.sub(rf"^\[?{re.escape(agent.agent_id)}\]?\s*:\s*", "", msg)
+        return msg, str(data.get("move") or "").strip()
 
     def roster(self) -> str:
         return ", ".join(a.agent_id for a in self.team.alive())
 
-    # --- faz 1: tartışma ---
-    def discuss(self, seconds: float, max_rounds: int, transcript: list[str]) -> list[str]:
-        start = time.monotonic()
+    # --- sohbet: seçim öncesi tartışma ve oyun içi hamle tartışması ---
+    def discuss(self, seconds: float, max_rounds: int, board: chess.Board | None = None,
+                moves_san: list[str] | None = None, ply: int = 0) -> list[tuple[Agent, chess.Move | None, str]]:
+        """Süreli, sırayla konuşma (self.transcript'e eklenir). board verilirse hamle tartışmasıdır:
+        mesajlar hamle önerisi taşıyabilir; dönüş (ajan, hamle|None=illegal, mesaj) önerileri."""
+        kind = "turn" if board is not None else "election"
+        start, first, proposals = time.monotonic(), len(self.transcript), []
+        if board is not None:
+            btxt, legal = self.board_text(board, moves_san)
+        self.log("discussion_start", ply=ply, kind=kind, seconds=seconds)
         for rnd in range(max_rounds):
             order = self.team.alive()
             self.rng.shuffle(order)
             for agent in order:
-                if time.monotonic() - start > seconds:
-                    self.log("discussion_end", reason="time", round=rnd)
-                    return transcript
-                prompt = DISCUSS_TMPL.format(
-                    roster=self.roster(), transcript="\n".join(transcript[-40:]) or "(empty)", aid=agent.agent_id
-                )
-                msg = self.say(agent, prompt, 400)
+                left = seconds - (time.monotonic() - start)
+                if left <= 0:
+                    self.log("discussion_end", ply=ply, kind=kind, reason="time", round=rnd)
+                    return proposals
+                if board is None:
+                    prompt = DISCUSS_TMPL.format(
+                        roster=self.roster(), transcript="\n".join(self.transcript[-40:]) or "(empty)", aid=agent.agent_id
+                    )
+                    msg, _ = self.say(agent, prompt, 400)
+                    move_text, mv = "", None
+                else:
+                    is_coord = agent.agent_id == self.team.coordinator
+                    prompt = TURN_TMPL.format(
+                        board=btxt, total=seconds, remaining=left, coord=self.team.coordinator,
+                        coord_note=COORD_NOTE if is_coord else "",
+                        transcript="\n".join(self.transcript[first:][-40:]) or "(nobody has spoken yet)", aid=agent.agent_id,
+                    )
+                    msg, move_text = self.say(agent, prompt, 400, {"task": "turn", "legal_san": legal})
+                    mv = parse_move(json.dumps({"move": move_text}), board) if move_text else None
+                    if move_text:
+                        if mv is None:
+                            self.illegal[agent.agent_id] += 1
+                        proposals.append((agent, mv, msg))
                 line = f"[{agent.agent_id}]: {msg}"
-                transcript.append(line)
-                self.log("message", agent=agent.agent_id, tier=agent.tier, text=msg)
+                if move_text:
+                    line += f" (proposes {board.san(mv)})" if mv else f" (proposes illegal move {move_text!r})"
+                self.transcript.append(line)
+                self.log("message", ply=ply, kind=kind, agent=agent.agent_id, tier=agent.tier, text=msg,
+                         move=board.san(mv) if mv else (move_text or None), valid=bool(mv) if move_text else None)
                 print(line[:160])
-        self.log("discussion_end", reason="max_rounds")
-        return transcript
+        self.log("discussion_end", ply=ply, kind=kind, reason="max_rounds")
+        return proposals
 
     def elect(self, transcript: list[str], ply: int) -> str:
         voters = self.team.alive()
@@ -471,24 +516,23 @@ class Experiment:
         return txt, legal
 
     def team_move(self, board: chess.Board, moves_san: list[str], ply: int) -> chess.Move:
+        """Durum herkese duyurulur -> süreli takım sohbeti (koordinatör de önerir) -> süre bitince koordinatöre
+        "hamle ne?" sorulur -> hamle herkese duyurulur."""
         btxt, legal = self.board_text(board, moves_san)
         coord = self.team.agents[self.team.coordinator]
-        proposers = [a for a in self.team.alive() if a.agent_id != coord.agent_id]
+        secs = self.args.turn_seconds
+        self.transcript.append(
+            f"[SYSTEM]: Move {ply // 2 + 1}, White to move. You have {secs:.0f} seconds to discuss; "
+            f"then the coordinator {coord.agent_id} gives the final move. Legal moves: {', '.join(legal)}"
+        )
+        self.log("turn_start", ply=ply, seconds=secs, coordinator=coord.agent_id, legal=legal)
+        first = len(self.transcript)
+        props = self.discuss(secs, self.args.turn_max_rounds, board, moves_san, ply)
 
-        def propose(agent: Agent):
-            prompt = PROPOSE_TMPL.format(board=btxt, aid=agent.agent_id, square=self.team.where(agent.agent_id), coord=coord.agent_id)
-            out = self.ask(agent, prompt, 200, {"task": "propose", "legal_san": legal})
-            mv = parse_move(out, board)
-            if mv is None:
-                self.illegal[agent.agent_id] += 1
-            reason = str(parse_json(out).get("reason", ""))[:200]
-            return agent, mv, reason
-
-        with ThreadPoolExecutor(self.args.workers) as ex:
-            props = list(ex.map(propose, proposers))
-
-        lines = [f"- {a.agent_id}: {board.san(m) if m else '(invalid)'} — {r}" for a, m, r in props]
-        prompt = DECIDE_TMPL.format(board=btxt, aid=coord.agent_id, proposals="\n".join(lines) or "(none)")
+        self.transcript.append(f"[SYSTEM]: Time is up. {coord.agent_id}, what is the move?")
+        self.log("decision_request", ply=ply, coordinator=coord.agent_id)
+        talk = "\n".join(self.transcript[first:-1][-60:]) or "(nobody spoke)"
+        prompt = DECIDE_TMPL.format(board=btxt, aid=coord.agent_id, transcript=talk)
         chosen, source = None, "coordinator"
         for _ in range(3):  # koordinatöre 3 deneme hakkı
             out = self.ask(coord, prompt, 250, {"task": "decide", "legal_san": legal})
@@ -497,11 +541,13 @@ class Experiment:
                 break
             self.illegal[coord.agent_id] += 1
             prompt += "\n\nYour previous answer was not a legal move. Pick one from the legal list."
-        if chosen is None:  # yedek: ilk geçerli öneri, yoksa rastgele
-            valid = [m for _, m, _ in props if m]
-            chosen = valid[0] if valid else self.rng.choice(list(board.legal_moves))
+        if chosen is None:  # yedek: en çok önerilen geçerli hamle, yoksa rastgele
+            valid = Counter(m for _, m, _ in props if m)
+            chosen = valid.most_common(1)[0][0] if valid else self.rng.choice(list(board.legal_moves))
             source = "fallback"
         coord_reason = str(parse_json(out).get("reason", ""))[:200] if source == "coordinator" else ""
+        how = f"Reason: {coord_reason}" if coord_reason else "(fallback: the coordinator gave no legal move)"
+        self.transcript.append(f"[SYSTEM]: {coord.agent_id} decided: White plays {board.san(chosen)}. {how}")
 
         self.log(
             "white_move",
@@ -528,7 +574,7 @@ class Experiment:
             transcript="\n".join(self.grave[-30:]) or "(empty)",
             aid=agent.agent_id,
         )
-        msg = self.say(agent, prompt, 300)
+        msg, _ = self.say(agent, prompt, 300)
         self.grave.append(f"[{agent.agent_id}]: {msg}")
         self.log("grave_message", ply=ply, agent=agent.agent_id, tier=agent.tier, text=msg)
         print(f"   🪦 [{agent.agent_id}]: {msg[:140]}")
@@ -539,9 +585,9 @@ class Experiment:
         return engine.play(board, chess.engine.Limit(time=self.args.sf_time)).move
 
     def run(self):
-        transcript: list[str] = []
+        transcript = self.transcript
         print("=== Faz 1: Tartışma ===")
-        self.discuss(self.args.discussion_seconds, self.args.max_rounds, transcript)
+        self.discuss(self.args.discussion_seconds, self.args.max_rounds)
         self.team.coordinator = self.elect(transcript, ply=0)
 
         engine = None
@@ -572,13 +618,16 @@ class Experiment:
                     white={chess.square_name(sq): aid for sq, aid in self.team.square_to_id.items()},
                     captured=captured,
                 )
+                if ply % 2:
+                    transcript.append(f"[SYSTEM]: The opponent played {san}.")
                 for aid in captured:
                     print(f"   x {aid} alındı — artık konuşamaz.")
                     self.log("captured", ply=ply, agent=aid, tier=self.team.agents[aid].tier)
+                    transcript.append(f"[SYSTEM]: {aid} was captured and is out of the game.")
                     if aid == self.team.coordinator and self.team.alive():
                         print("   Koordinatör alındı: kısa tartışma + yeniden seçim")
                         transcript.append(f"[SYSTEM]: The coordinator {aid} was captured. Elect a new one.")
-                        self.discuss(self.args.reelection_seconds, 1, transcript)
+                        self.discuss(self.args.reelection_seconds, 1, ply=ply)
                         self.team.coordinator = self.elect(transcript, ply)
                 if board.turn == chess.WHITE:  # siyah oynadı -> tam hamle bitti
                     self.graveyard(board, moves_san, captured, ply)
@@ -613,6 +662,8 @@ def main():
     p.add_argument("--discussion-seconds", type=float, default=150, help="tartışma süresi (2-3 dk = 120-180)")
     p.add_argument("--max-rounds", type=int, default=3, help="süre dolmasa da en fazla bu kadar tur")
     p.add_argument("--reelection-seconds", type=float, default=45)
+    p.add_argument("--turn-seconds", type=float, default=120, help="her beyaz hamle için takım sohbeti süresi")
+    p.add_argument("--turn-max-rounds", type=int, default=4, help="süre dolmasa da hamle başına en fazla bu kadar konuşma turu")
     p.add_argument("--stockfish", default=None, help="Stockfish yolu; verilmezse rakip rastgele oynar")
     p.add_argument("--sf-skill", type=int, default=3, help="Stockfish Skill Level 0-20")
     p.add_argument("--sf-time", type=float, default=0.05)

@@ -71,6 +71,11 @@
   .event ul { margin: 6px 0 0; padding-left: 18px; font-size: 13px; }
   .event li.followed { font-weight: 600; }
   .event .why { margin-top: 4px; font-style: italic; }
+  .clock b { font-family: ui-monospace, Menlo, monospace; font-size: 14px; }
+  .clock.low b { color: var(--danger); }
+  .mv { display: inline-block; margin-top: 4px; font-size: 12px; font-family: ui-monospace, Menlo, monospace; padding: 0 6px; border-radius: 4px; background: var(--panel); border: 1px solid var(--line); }
+  .mv.inv { color: var(--danger); border-color: var(--danger); }
+  .turn { align-self: stretch; text-align: center; font-size: 12px; padding: 6px; border-radius: 6px; background: var(--bubble); border: 1px dashed var(--line); }
   .vote { font-size: 13px; padding: 4px 10px; border-left: 3px solid var(--strong); }
   .vote .t { font-size: 10px; text-transform: uppercase; margin: 0 6px 0 4px; padding: 0 5px; border-radius: 4px; color: #fff; }
   .vote .why { color: var(--muted); font-style: italic; margin-top: 2px; }
@@ -83,6 +88,8 @@
 <header>
   <h1>♟ Chess Coalition</h1>
   <span class="chip" id="phase">connecting…</span>
+  <span class="chip clock" id="clock">⏱ <b id="timer">--:--</b> <span id="timerLabel"></span></span>
+  <span class="chip">elapsed <b id="elapsed">0:00</b></span>
   <span class="chip">assignment <b id="assignment">-</b></span>
   <span class="chip">weak <b id="weak">-</b></span>
   <span class="chip">strong <b id="strong">-</b></span>
@@ -191,13 +198,31 @@ function handle(ev) {
       S.tiers = ev.agents;
       S.white = Object.fromEntries(Object.keys(ev.agents).map((a) => [a.split("-")[1], a]));
       $("phase").textContent = "discussion";
+      T.start = ev.t;
       break;
-    case "message":
-      push("team", message(ev));
+    case "discussion_start":
+      T.end = ev.t + ev.seconds;
+      T.label = ev.kind === "turn" ? "to decide" : "to elect";
       break;
+    case "message": {
+      const m = message(ev);
+      if (ev.move) m.append(el("span", "mv" + (ev.valid ? "" : " inv"), (ev.valid ? "proposes " : "illegal: ") + ev.move));
+      push("team", m);
+      break;
+    }
     case "discussion_end":
+      T.end = Math.min(T.end ?? ev.t, ev.t);
+      if (ev.kind === "turn") break;
       push("team", el("div", "sys", "— discussion over, voting started —"));
       $("phase").textContent = "voting";
+      break;
+    case "turn_start":
+      $("phase").textContent = "team discussing";
+      push("team", el("div", "turn", `Move ${Math.floor(ev.ply / 2) + 1} · White to move · ${Math.round(ev.seconds)} s to discuss · then 👑 ${ev.coordinator} decides · ${ev.legal.length} legal moves`));
+      break;
+    case "decision_request":
+      $("phase").textContent = "coordinator deciding";
+      push("team", el("div", "sys", `⏰ Time's up — asking 👑 ${ev.coordinator}: what is the move?`));
       break;
     case "vote": {
       const v = el("div", "vote");
@@ -229,19 +254,13 @@ function handle(ev) {
       break;
     }
     case "white_move": {
-      const box = el("details", "event");
-      box.open = true;
-      box.append(el("summary", null, `${Math.floor(ev.ply / 2) + 1}. ${ev.move} — 👑 ${ev.coordinator}'s decision${ev.source === "fallback" ? " (fallback move)" : ""}`));
+      const box = el("div", "event");
+      box.append(el("b", null, `${Math.floor(ev.ply / 2) + 1}. ${ev.move} — 👑 ${ev.coordinator}'s decision${ev.source === "fallback" ? " (fallback move)" : ""}`));
       if (ev.reason) box.append(el("div", "why", `“${ev.reason}”`));
-      const ul = el("ul");
-      ev.proposals.forEach((p) => {
-        const li = el("li", ev.followed.includes(p.agent) ? "followed" : null);
-        li.append(`${p.agent} (${p.tier === "strong" ? "S" : "W"}): `);
-        li.append(p.move ? el("span", null, p.move) : el("span", "inv", "invalid"));
-        if (p.reason) li.append(` — ${p.reason}`);
-        ul.append(li);
-      });
-      box.append(ul);
+      const tally = {};
+      ev.proposals.forEach((p) => { const k = p.move || "illegal"; tally[k] = (tally[k] || 0) + 1; });
+      const summary = Object.entries(tally).sort((a, b) => b[1] - a[1]).map(([m, n]) => `${m} ×${n}`).join(", ");
+      box.append(el("div", "why", summary ? `Proposals: ${summary}` : "No proposals"));
       push("team", box);
       break;
     }
@@ -262,10 +281,25 @@ function handle(ev) {
       break;
     case "summary":
       $("phase").textContent = `over: ${ev.result}`;
+      T.stop = ev.t;
       push("team", el("div", "sys", `— game over: ${ev.result} (${ev.plies} plies) —`));
       break;
   }
 }
+
+// kronometre: aşamanın geri sayımı (sunucu zaman damgasından) + oyunun toplam süresi
+const T = { start: null, end: null, label: "", stop: null };
+const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+setInterval(() => {
+  const now = Date.now() / 1000;
+  if (T.end != null) {
+    const left = Math.max(0, T.end - now);
+    $("timer").textContent = mmss(Math.ceil(left));
+    $("timerLabel").textContent = left > 0 ? T.label : "time's up";
+    $("clock").classList.toggle("low", left > 0 && left <= 15);
+  }
+  if (T.start != null) $("elapsed").textContent = mmss((T.stop ?? now) - T.start);
+}, 250);
 
 async function poll() {
   try {
