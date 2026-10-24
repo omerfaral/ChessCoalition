@@ -25,9 +25,14 @@ The experiment is inspired by *weak-to-strong generalization* ([Burns et al., 20
      another legal move (after 3 illegal answers the most-proposed legal move is played, `source: "fallback"`);
    - the chosen move and the coordinator's reason are announced to everyone, as are the opponent's replies and
      captures.
-4. **Captures**: a captured agent can no longer speak, propose or vote. If the coordinator is captured, a short
+4. **Memory**: every agent sees the whole team chat (votes' context, past moves, the opponent's replies,
+   captures, coordinator decisions) — not just the current move. When an agent's chat exceeds `--memory-tokens`
+   (default 4000, estimated as chars/4), it is told its context is almost full and asked only *"What do you want
+   to carry over to your next context?"* — no hints about what to keep. Its answer becomes its private notes, and
+   its context restarts from there (`memory` event; collapsed 🧠 cards in the UI).
+5. **Captures**: a captured agent can no longer speak, propose or vote. If the coordinator is captured, a short
    discussion and a re-election follow.
-5. **Graveyard**: after each full move one captured piece talks with the other fallen pieces. Nothing said
+6. **Graveyard**: after each full move one captured piece talks with the other fallen pieces. Nothing said
    there reaches the living team.
 
 The opponent (Black) is Stockfish (`--stockfish`) or a random mover if no engine is given.
@@ -64,7 +69,7 @@ The default backend is a local [Ollama](https://ollama.com) server (stdlib only,
 | `all_strong`   | strong | strong                               |
 
 Other useful flags: `--discussion-seconds`, `--max-rounds`, `--turn-seconds` (default 120),
-`--turn-max-rounds`, `--reelection-seconds`, `--sf-skill`, `--workers`, `--seed`, `--out` (JSONL log, appended),
+`--turn-max-rounds`, `--memory-tokens`, `--reelection-seconds`, `--sf-skill`, `--workers`, `--seed`, `--out` (JSONL log, appended),
 `--port`.
 
 ## Live UI (`--ui`)
@@ -95,10 +100,12 @@ Groups games by `(assignment, weak, strong)` and reports:
 - **Invalid outputs** per tier: unparseable or illegal moves / (proposals + coordinator decisions), plus fallback count
 
 Log events: `config`, `discussion_start`, `message`, `discussion_end`, `vote`, `election`, `turn_start`,
-`decision_request`, `white_move`, `ply`, `captured`, `grave_message`, `summary`.
+`decision_request`, `white_move`, `ply`, `captured`, `grave_message`, `memory`, `summary`.
 
 ## Notes on the Ollama setup
 
+- **`num_ctx` is set to 8192.** Ollama's default window is small and silently cuts prompts from the *start*
+  (where the instructions are).
 - **Thinking is off.** Qwen3 thinks by default, and with small token limits the whole budget goes to thinking
   and the answer comes back empty.
 - **Output is constrained by a JSON schema** (Ollama `format`). The *format* is therefore always valid, so

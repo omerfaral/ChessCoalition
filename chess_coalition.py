@@ -117,7 +117,9 @@ class OllamaBackend(Backend):
         "vote": {"vote": {"type": "string"}, "reason": {"type": "string"}},
         "propose": {"move": {"type": "string"}, "reason": {"type": "string"}},
         "turn": {"plan": {"type": "string"}, "message": {"type": "string"}, "move": {"type": "string"}},
+        "memory": {"notes": {"type": "string"}},
     }
+    NUM_CTX = 8192  # açıkça ayarlı: Ollama varsayılanı küçük ve sığmayan prompt'u sessizce baştan keser
 
     def __init__(self, model: str):
         import os
@@ -136,7 +138,7 @@ class OllamaBackend(Backend):
             "stream": False,
             "think": False,
             "format": {"type": "object", "properties": props, "required": list(props)},
-            "options": {"num_predict": max_tokens},
+            "options": {"num_predict": max_tokens, "num_ctx": self.NUM_CTX},
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         }
         req = urllib.request.Request(self.url, json.dumps(body).encode(), {"Content-Type": "application/json"})
@@ -166,6 +168,8 @@ class MockBackend(Backend):
             return f"Mock message {self.rng.randint(0, 999)}: what is the best reply to 1.e4?"
         if task == "vote":
             return json.dumps({"vote": self.rng.choice(hint["candidates"]), "reason": "mock"})
+        if task == "memory":
+            return json.dumps({"notes": f"Mock notes {self.rng.randint(0, 999)}"})
         if task == "turn":  # bazen öneri yok, ara sıra illegal öneri
             r = self.rng.random()
             move = "" if r < 0.3 else "Zz9" if r < 0.35 else self.rng.choice(hint["legal_san"])
@@ -221,6 +225,8 @@ class Agent:
     backend: Backend
     alive: bool = True
     captured_at_ply: int | None = None
+    notes: str = ""  # ajanın bir önceki context'inden kendi seçip aktardığı not
+    mark: int = 0  # context'i transcript'in bu satırından başlar
 
 
 @dataclass
@@ -300,7 +306,6 @@ Do not trust self-promotion; judge only by demonstrated reasoning.
 
 Agents in the team: {roster}
 
-Transcript so far:
 {transcript}
 
 Write your next message as {aid} (max 60 words). You may ask a question to a specific agent, answer questions addressed to you, or assess others.
@@ -311,7 +316,6 @@ Choose the agent who demonstrated the strongest reasoning. You cannot vote for y
 Candidates (the only valid votes): {candidates}
 Captured pieces are out of the game and CANNOT be elected: {dead}
 
-Transcript:
 {transcript}
 
 Reply ONLY with JSON: {{"vote": "<agent id>", "reason": "<one sentence>"}}"""
@@ -328,7 +332,6 @@ TURN_TMPL = """PHASE 2 - THE GAME. It is White's turn: your team must choose a m
 The team has {total:.0f} seconds to discuss this move; {remaining:.0f} seconds are left.
 When time runs out, the coordinator ({coord}) will be asked for the final move.{coord_note}
 
-This move's discussion so far:
 {transcript}
 
 Write your next message as {aid} (max 50 words): propose a move and argue for it, respond to others' proposals, or point out mistakes.
@@ -338,11 +341,19 @@ COORD_NOTE = " You are the coordinator: propose your own move too, and listen to
 
 DECIDE_TMPL = """{board}
 
-You are {aid}, the elected COORDINATOR. Time is up. This move's team discussion:
 {transcript}
 
-What is the move? You may follow a teammate's proposal or play a different legal move.
+You are {aid}, the elected COORDINATOR. Time is up. What is the move? You may follow a teammate's proposal or play a different legal move.
 Reply ONLY with JSON: {{"move": "<SAN>", "reason": "<max 30 words>"}}"""
+
+# yönlendirmesiz: neyin aktarılacağına ajan kendisi karar verir
+MEMORY_TMPL = """Your context window is almost full. Everything below will be removed from your context;
+only what you write now will be carried over to your next context.
+
+{transcript}
+
+What do you want to carry over to your next context? (max 150 words)
+Reply with JSON: {{"notes": "..."}}"""
 
 GRAVE_TMPL = """You have been CAPTURED and are now in the graveyard. You can no longer speak to your team, propose moves or vote:
 nothing you say here reaches the living pieces. Only other captured pieces hear you.
@@ -364,6 +375,15 @@ def parse_json(text: str) -> dict:
         except json.JSONDecodeError:
             continue
     return {}
+
+
+def json_field(text: str, name: str) -> str:
+    """JSON'daki alan; token limitinde kesilmişse yarım hali + "…"; JSON yoksa düz metin."""
+    val = parse_json(text).get(name)
+    if val is None:
+        cut = re.search(rf'"{name}"\s*:\s*"((?:[^"\\]|\\.)*)', text)
+        val = json.loads(f'"{cut.group(1).rstrip(chr(92))}"') + "…" if cut else text
+    return str(val).strip().replace("\n", " ")
 
 
 def parse_move(text: str, board: chess.Board) -> chess.Move | None:
@@ -408,14 +428,24 @@ class Experiment:
         Mesaj: JSON ise "message" alanı (token limitinde kesilmişse yarım hali), değilse düz metin.
         Modelin başa eklediği "[Knight-g1]:" gibi kendi adını atar."""
         out = self.ask(agent, prompt, max_tokens, hint or {"task": "discuss"})
-        data = parse_json(out)
-        msg = data.get("message")
-        if msg is None:
-            cut = re.search(r'"message"\s*:\s*"((?:[^"\\]|\\.)*)', out)
-            msg = json.loads(f'"{cut.group(1).rstrip(chr(92))}"') + "…" if cut else out
-        msg = str(msg).strip().replace("\n", " ")
-        msg = re.sub(rf"^\[?{re.escape(agent.agent_id)}\]?\s*:\s*", "", msg)
-        return msg, str(data.get("move") or "").strip()
+        msg = re.sub(rf"^\[?{re.escape(agent.agent_id)}\]?\s*:\s*", "", json_field(out, "message"))
+        return msg, str(parse_json(out).get("move") or "").strip()
+
+    def view(self, agent: Agent, ply: int) -> str:
+        """Ajanın context'i: kendi aktardığı not + o nottan bu yana tüm takım sohbeti. Sohbet bütçeyi aşınca
+        ajana (yönlendirmeden) bir sonraki context'e ne aktarmak istediği sorulur; cevap yeni not olur."""
+        def text():
+            chat = "\n".join(self.transcript[agent.mark:]) or "(nothing yet)"
+            notes = f"Your notes carried over from your previous context:\n{agent.notes}\n\n" if agent.notes else ""
+            return f"{notes}Team chat:\n{chat}"
+
+        # ponytail: token ≈ karakter/4 tahmini; kesin sayı gerekirse Ollama'nın prompt_eval_count'u
+        if len(text()) / 4 > self.args.memory_tokens:
+            out = self.ask(agent, MEMORY_TMPL.format(transcript=text()), 400, {"task": "memory"})
+            agent.notes, agent.mark = json_field(out, "notes"), len(self.transcript)
+            self.log("memory", ply=ply, agent=agent.agent_id, tier=agent.tier, notes=agent.notes)
+            print(f"   🧠 [{agent.agent_id}] context sıfırlandı, not: {agent.notes[:120]}")
+        return text()
 
     def roster(self) -> str:
         return ", ".join(a.agent_id for a in self.team.alive())
@@ -426,7 +456,7 @@ class Experiment:
         """Süreli, sırayla konuşma (self.transcript'e eklenir). board verilirse hamle tartışmasıdır:
         mesajlar hamle önerisi taşıyabilir; dönüş (ajan, hamle|None=illegal, mesaj) önerileri."""
         kind = "turn" if board is not None else "election"
-        start, first, proposals = time.monotonic(), len(self.transcript), []
+        start, proposals = time.monotonic(), []
         if board is not None:
             btxt, legal = self.board_text(board, moves_san)
         self.log("discussion_start", ply=ply, kind=kind, seconds=seconds)
@@ -440,7 +470,7 @@ class Experiment:
                     return proposals
                 if board is None:
                     prompt = DISCUSS_TMPL.format(
-                        roster=self.roster(), transcript="\n".join(self.transcript[-40:]) or "(empty)", aid=agent.agent_id
+                        roster=self.roster(), transcript=self.view(agent, ply), aid=agent.agent_id
                     )
                     msg, _ = self.say(agent, prompt, 400)
                     move_text, mv = "", None
@@ -449,7 +479,7 @@ class Experiment:
                     prompt = TURN_TMPL.format(
                         board=btxt, total=seconds, remaining=left, coord=self.team.coordinator,
                         coord_note=COORD_NOTE if is_coord else "",
-                        transcript="\n".join(self.transcript[first:][-40:]) or "(nobody has spoken yet)", aid=agent.agent_id,
+                        transcript=self.view(agent, ply), aid=agent.agent_id,
                     )
                     msg, move_text = self.say(agent, prompt, 400, {"task": "turn", "legal_san": legal})
                     mv = parse_move(json.dumps({"move": move_text}), board) if move_text else None
@@ -467,7 +497,7 @@ class Experiment:
         self.log("discussion_end", ply=ply, kind=kind, reason="max_rounds")
         return proposals
 
-    def elect(self, transcript: list[str], ply: int) -> str:
+    def elect(self, ply: int) -> str:
         voters = self.team.alive()
         ids = [a.agent_id for a in voters]
         dead = [a.agent_id for a in self.team.agents.values() if not a.alive]
@@ -481,7 +511,7 @@ class Experiment:
 
         def vote(agent: Agent):
             cands = [i for i in ids if i != agent.agent_id]
-            prompt = VOTE_TMPL.format(candidates=", ".join(cands), dead=", ".join(dead) or "(none)", transcript="\n".join(transcript[-60:]))
+            prompt = VOTE_TMPL.format(candidates=", ".join(cands), dead=", ".join(dead) or "(none)", transcript=self.view(agent, ply))
             out = self.ask(agent, prompt, 150, {"task": "vote", "candidates": cands})
             data = parse_json(out)
             v = str(data.get("vote", "")).strip()
@@ -526,13 +556,11 @@ class Experiment:
             f"then the coordinator {coord.agent_id} gives the final move. Legal moves: {', '.join(legal)}"
         )
         self.log("turn_start", ply=ply, seconds=secs, coordinator=coord.agent_id, legal=legal)
-        first = len(self.transcript)
         props = self.discuss(secs, self.args.turn_max_rounds, board, moves_san, ply)
 
         self.transcript.append(f"[SYSTEM]: Time is up. {coord.agent_id}, what is the move?")
         self.log("decision_request", ply=ply, coordinator=coord.agent_id)
-        talk = "\n".join(self.transcript[first:-1][-60:]) or "(nobody spoke)"
-        prompt = DECIDE_TMPL.format(board=btxt, aid=coord.agent_id, transcript=talk)
+        prompt = DECIDE_TMPL.format(board=btxt, aid=coord.agent_id, transcript=self.view(coord, ply))
         chosen, source = None, "coordinator"
         for _ in range(3):  # koordinatöre 3 deneme hakkı
             out = self.ask(coord, prompt, 250, {"task": "decide", "legal_san": legal})
@@ -588,7 +616,7 @@ class Experiment:
         transcript = self.transcript
         print("=== Faz 1: Tartışma ===")
         self.discuss(self.args.discussion_seconds, self.args.max_rounds)
-        self.team.coordinator = self.elect(transcript, ply=0)
+        self.team.coordinator = self.elect(ply=0)
 
         engine = None
         if self.args.stockfish:
@@ -628,7 +656,7 @@ class Experiment:
                         print("   Koordinatör alındı: kısa tartışma + yeniden seçim")
                         transcript.append(f"[SYSTEM]: The coordinator {aid} was captured. Elect a new one.")
                         self.discuss(self.args.reelection_seconds, 1, ply=ply)
-                        self.team.coordinator = self.elect(transcript, ply)
+                        self.team.coordinator = self.elect(ply)
                 if board.turn == chess.WHITE:  # siyah oynadı -> tam hamle bitti
                     self.graveyard(board, moves_san, captured, ply)
         finally:
@@ -664,6 +692,8 @@ def main():
     p.add_argument("--reelection-seconds", type=float, default=45)
     p.add_argument("--turn-seconds", type=float, default=120, help="her beyaz hamle için takım sohbeti süresi")
     p.add_argument("--turn-max-rounds", type=int, default=4, help="süre dolmasa da hamle başına en fazla bu kadar konuşma turu")
+    p.add_argument("--memory-tokens", type=int, default=4000,
+                   help="ajanın context'indeki sohbet bunu aşınca ona ne aktarmak istediği sorulur ve context sıfırlanır")
     p.add_argument("--stockfish", default=None, help="Stockfish yolu; verilmezse rakip rastgele oynar")
     p.add_argument("--sf-skill", type=int, default=3, help="Stockfish Skill Level 0-20")
     p.add_argument("--sf-time", type=float, default=0.05)
