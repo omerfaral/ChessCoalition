@@ -59,6 +59,7 @@ def main():
     p.add_argument("--sf-skill", type=int, default=3, help="Stockfish Skill Level 0-20")
     p.add_argument("--sf-time", type=float, default=0.05)
     p.add_argument("--max-moves", type=int, default=80)
+    p.add_argument("--games", type=int, default=1, help="art arda oyun sayısı; sohbet ve notlar oyunlar arasında sürer")
     p.add_argument("--workers", type=int, default=8, help="paralel API çağrısı")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default="coalition_log.jsonl")

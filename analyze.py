@@ -3,7 +3,7 @@ chess_coalition.py JSONL loglarını atamalara (assignment) göre karşılaştı
 
   python analyze.py coalition_log.jsonl [daha_fazla.jsonl ...]
 
-Her "config" olayı yeni bir oyun başlatır; "summary" olayı olmayan (yarıda kalmış) oyunlar atlanır.
+Her "config" (ve --games ile aynı çalıştırmadaki sonraki her "game_start") olayı yeni bir oyun başlatır; "summary" olayı olmayan (yarıda kalmış) oyunlar atlanır.
 Gruplama: (assignment, weak, strong).
 """
 
@@ -15,7 +15,7 @@ from collections import Counter, defaultdict
 
 
 def load_games(paths: list[str]) -> tuple[list[dict], int]:
-    games, crashed, cur = [], 0, None
+    games, crashed, cur, cfg = [], 0, None, None
     for path in paths:
         with open(path, encoding="utf-8") as fh:
             for line in fh:
@@ -23,7 +23,9 @@ def load_games(paths: list[str]) -> tuple[list[dict], int]:
                 kind = ev["event"]
                 if kind == "config":
                     crashed += cur is not None
-                    cur = {"config": ev, "elections": [], "moves": []}
+                    cfg, cur = ev, {"config": ev, "elections": [], "moves": []}
+                elif kind == "game_start" and cur is None and cfg:  # aynı çalıştırmada sonraki oyun (--games)
+                    cur = {"config": cfg, "elections": [], "moves": []}
                 elif cur is None:
                     continue
                 elif kind == "election":

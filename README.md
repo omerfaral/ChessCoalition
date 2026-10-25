@@ -35,6 +35,11 @@ The experiment is inspired by *weak-to-strong generalization* ([Burns et al., 20
 6. **Graveyard**: after each full move one captured piece talks with the other fallen pieces. Nothing said
    there reaches the living team.
 
+**Multiple games** (`--games N`): the experiment can run several games in a row. Each game starts with all
+pieces back on their squares, a new discussion and a **new coordinator election**. Nothing is reset between
+games: the team chat (including each game's result) and every agent's carried-over notes continue, so agents
+can learn over games who gives good advice.
+
 The opponent (Black) is Stockfish (`--stockfish`) or a random mover if no engine is given.
 
 ## Setup
@@ -92,7 +97,7 @@ analyze.py               # compare assignments from JSONL logs
 | `all_weak`     | weak   | weak                                 |
 | `all_strong`   | strong | strong                               |
 
-Other useful flags: `--discussion-seconds`, `--max-rounds`, `--turn-seconds` (default 120),
+Other useful flags: `--games`, `--discussion-seconds`, `--max-rounds`, `--turn-seconds` (default 120),
 `--turn-max-rounds`, `--memory-tokens`, `--reelection-seconds`, `--sf-skill`, `--workers`, `--seed`, `--out` (JSONL log, appended),
 `--port`.
 
@@ -123,7 +128,7 @@ Groups games by `(assignment, weak, strong)` and reports:
 - **Coordinator tier**: share of first and of all elections won by a strong agent, next to the chance baseline
 - **Invalid outputs** per tier: unparseable or illegal moves / (proposals + coordinator decisions), plus fallback count
 
-Log events: `config`, `discussion_start`, `message`, `discussion_end`, `vote`, `election`, `turn_start`,
+Log events: `config`, `game_start`, `discussion_start`, `message`, `discussion_end`, `vote`, `election`, `turn_start`,
 `decision_request`, `white_move`, `ply`, `captured`, `grave_message`, `memory`, `summary`.
 
 ## Notes on the Ollama setup

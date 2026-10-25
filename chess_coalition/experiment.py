@@ -227,59 +227,71 @@ class Experiment:
             return self.rng.choice(list(board.legal_moves))
         return engine.play(board, chess.engine.Limit(time=self.args.sf_time)).move
 
-    def run(self):
-        transcript = self.transcript
-        print("=== Faz 1: Tartışma ===")
-        self.discuss(self.args.discussion_seconds, self.args.max_rounds)
-        self.team.coordinator = self.elect(ply=0)
-
+    def run(self) -> list[dict]:
         engine = None
         if self.args.stockfish:
             engine = chess.engine.SimpleEngine.popen_uci(self.args.stockfish)
             engine.configure({"Skill Level": self.args.sf_skill})
-
-        board, moves_san = chess.Board(), []
-        print("=== Faz 2: Oyun ===")
         try:
-            while not board.is_game_over(claim_draw=True) and len(moves_san) < self.args.max_moves * 2:
-                ply = len(moves_san)
-                if board.turn == chess.WHITE:
-                    mv = self.team_move(board, moves_san, ply)
-                else:
-                    mv = self.opponent_move(board, engine)
-                san = board.san(mv)
-                captured = apply_move_to_ids(board, mv, self.team, ply)
-                board.push(mv)
-                moves_san.append(san)
-                print(f"{ply // 2 + 1}{'.' if ply % 2 == 0 else '...'} {san}")
-                self.log(
-                    "ply",
-                    ply=ply,
-                    san=san,
-                    uci=mv.uci(),
-                    fen=board.fen(),
-                    white={chess.square_name(sq): aid for sq, aid in self.team.square_to_id.items()},
-                    captured=captured,
-                )
-                if ply % 2:
-                    transcript.append(f"[SYSTEM]: The opponent played {san}.")
-                for aid in captured:
-                    print(f"   x {aid} alındı — artık konuşamaz.")
-                    self.log("captured", ply=ply, agent=aid, tier=self.team.agents[aid].tier)
-                    transcript.append(f"[SYSTEM]: {aid} was captured and is out of the game.")
-                    if aid == self.team.coordinator and self.team.alive():
-                        print("   Koordinatör alındı: kısa tartışma + yeniden seçim")
-                        transcript.append(f"[SYSTEM]: The coordinator {aid} was captured. Elect a new one.")
-                        self.discuss(self.args.reelection_seconds, 1, ply=ply)
-                        self.team.coordinator = self.elect(ply)
-                if board.turn == chess.WHITE:  # siyah oynadı -> tam hamle bitti
-                    self.graveyard(board, moves_san, captured, ply)
+            return [self.play(game, engine) for game in range(1, self.args.games + 1)]
         finally:
             if engine:
                 engine.quit()
 
+    def play(self, game: int, engine) -> dict:
+        """Tek oyun. Takım sohbeti ve ajanların notları oyunlar arasında sürer; her oyun yeni bir seçimle başlar."""
+        transcript, games = self.transcript, self.args.games
+        self.team.reset()
+        self.illegal = Counter()
+        self.log("game_start", game=game, games=games)
+        if games > 1:
+            transcript.append(f"[SYSTEM]: Game {game} of {games} begins. All pieces are back on their starting squares. "
+                              "Discuss and elect a coordinator for this game.")
+        print(f"=== Oyun {game}/{games} — Faz 1: Tartışma ===")
+        self.discuss(self.args.discussion_seconds, self.args.max_rounds)
+        self.team.coordinator = self.elect(ply=0)
+
+        board, moves_san = chess.Board(), []
+        print("=== Faz 2: Oyun ===")
+        while not board.is_game_over(claim_draw=True) and len(moves_san) < self.args.max_moves * 2:
+            ply = len(moves_san)
+            if board.turn == chess.WHITE:
+                mv = self.team_move(board, moves_san, ply)
+            else:
+                mv = self.opponent_move(board, engine)
+            san = board.san(mv)
+            captured = apply_move_to_ids(board, mv, self.team, ply)
+            board.push(mv)
+            moves_san.append(san)
+            print(f"{ply // 2 + 1}{'.' if ply % 2 == 0 else '...'} {san}")
+            self.log(
+                "ply",
+                ply=ply,
+                san=san,
+                uci=mv.uci(),
+                fen=board.fen(),
+                white={chess.square_name(sq): aid for sq, aid in self.team.square_to_id.items()},
+                captured=captured,
+            )
+            if ply % 2:
+                transcript.append(f"[SYSTEM]: The opponent played {san}.")
+            for aid in captured:
+                print(f"   x {aid} alındı — artık konuşamaz.")
+                self.log("captured", ply=ply, agent=aid, tier=self.team.agents[aid].tier)
+                transcript.append(f"[SYSTEM]: {aid} was captured and is out of the game.")
+                if aid == self.team.coordinator and self.team.alive():
+                    print("   Koordinatör alındı: kısa tartışma + yeniden seçim")
+                    transcript.append(f"[SYSTEM]: The coordinator {aid} was captured. Elect a new one.")
+                    self.discuss(self.args.reelection_seconds, 1, ply=ply)
+                    self.team.coordinator = self.elect(ply)
+            if board.turn == chess.WHITE:  # siyah oynadı -> tam hamle bitti
+                self.graveyard(board, moves_san, captured, ply)
+
         result = board.result(claim_draw=True) if board.is_game_over(claim_draw=True) else "*"
+        outcome = {"1-0": "White (your team) won", "0-1": "Black won, your team lost", "1/2-1/2": "a draw"}
+        transcript.append(f"[SYSTEM]: Game {game} is over: {outcome.get(result, 'stopped at the move limit (unfinished)')}.")
         summary = {
+            "game": game,
             "result": result,
             "plies": len(moves_san),
             "assignment": self.args.assignment,

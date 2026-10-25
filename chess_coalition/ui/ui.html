@@ -91,6 +91,7 @@
   <span class="chip" id="phase">connecting…</span>
   <span class="chip clock" id="clock">⏱ <b id="timer">--:--</b> <span id="timerLabel"></span></span>
   <span class="chip">elapsed <b id="elapsed">0:00</b></span>
+  <span class="chip">game <b id="game">-</b></span>
   <span class="chip">assignment <b id="assignment">-</b></span>
   <span class="chip">weak <b id="weak">-</b></span>
   <span class="chip">strong <b id="strong">-</b></span>
@@ -121,7 +122,8 @@
 <script>
 const GLYPH = { k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟" };
 const $ = (id) => document.getElementById(id);
-const S = { fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", white: {}, tiers: {}, coord: null, last: null, moves: [], dead: [] };
+const START = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+const S = { fen: START, white: {}, tiers: {}, coord: null, last: null, moves: [], dead: [] };
 let since = 0;
 
 function el(tag, cls, text) {
@@ -200,6 +202,13 @@ function handle(ev) {
       S.white = Object.fromEntries(Object.keys(ev.agents).map((a) => [a.split("-")[1], a]));
       $("phase").textContent = "discussion";
       T.start = ev.t;
+      break;
+    case "game_start":  // yeni oyun: tahta sıfırlanır, sohbet sürer
+      Object.assign(S, { fen: START, last: null, moves: [], dead: [], coord: null });
+      S.white = Object.fromEntries(Object.keys(S.tiers).map((a) => [a.split("-")[1], a]));
+      $("game").textContent = `${ev.game}/${ev.games}`;
+      $("phase").textContent = "discussion";
+      if (ev.games > 1) ["team", "grave"].forEach((f) => push(f, el("div", "turn", `━━ Game ${ev.game} of ${ev.games} ━━`)));
       break;
     case "discussion_start":
       T.end = ev.t + ev.seconds;

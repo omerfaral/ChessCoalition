@@ -32,6 +32,13 @@ class Team:
     coordinator: str | None = None
     elections: list[dict] = field(default_factory=list)
 
+    def reset(self):
+        """Yeni oyun: herkes canlı ve başlangıç karesinde, koordinatör yok. Ajanların notları/context'i korunur."""
+        for a in self.agents.values():
+            a.alive, a.captured_at_ply = True, None
+        self.square_to_id = {chess.parse_square(aid.split("-")[1]): aid for aid in self.agents}
+        self.coordinator, self.elections = None, []
+
     def alive(self) -> list[Agent]:
         return [a for a in self.agents.values() if a.alive]
 
