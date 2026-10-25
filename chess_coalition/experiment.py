@@ -244,9 +244,9 @@ class Experiment:
         self.team.reset()
         self.illegal = Counter()
         self.log("game_start", game=game, games=games)
-        if games > 1:
-            transcript.append(f"[SYSTEM]: Game {game} of {games} begins. All pieces are back on their starting squares. "
-                              "Discuss and elect a coordinator for this game.")
+        if game > 1:  # ilk oyunda duyuru yok: talimatlar zaten prompt'ta
+            transcript.append(f"[SYSTEM]: Game {game} of {games} begins. Captured pieces are back in the game. "
+                              "Elect a coordinator for this game.")
         print(f"=== Oyun {game}/{games} — Faz 1: Tartışma ===")
         self.discuss(self.args.discussion_seconds, self.args.max_rounds)
         self.team.coordinator = self.elect(ply=0)
